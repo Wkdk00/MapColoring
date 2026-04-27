@@ -3,183 +3,205 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Walk Tracker Pro</title>
-    
-    <!-- Подключаем стили Leaflet -->
+    <title>Randonaut Web</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    
     <style>
-        body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-        #map { height: 100vh; width: 100vw; z-index: 1; background: #ddd; }
-        
-        /* Панель статистики */
-        #stats {
+        body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+        #map { height: 100vh; width: 100vw; z-index: 1; background: #f0f0f0; }
+
+        /* Компактный индикатор расстояния сверху */
+        #info-panel {
             position: absolute;
             top: 20px;
             left: 50%;
             transform: translateX(-50%);
             z-index: 1000;
             background: rgba(255, 255, 255, 0.95);
-            padding: 12px 24px;
-            border-radius: 30px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            padding: 8px 16px;
+            border-radius: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
             text-align: center;
-            min-width: 180px;
+            min-width: 90px;
             backdrop-filter: blur(5px);
+            display: none;
         }
-        #stats h2 { margin: 0; font-size: 22px; color: #2c3e50; font-weight: 700; }
-        #stats p { margin: 4px 0 0; font-size: 13px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 1px; }
-        
-        /* Кнопка сброса */
-        #reset-btn {
+        .distance-text { font-size: 18px; font-weight: 800; color: #ff4757; }
+        .status-text { font-size: 11px; color: #666; margin-bottom: 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+        /* Панель управления снизу */
+        #ui-container {
             position: absolute;
             bottom: 30px;
             left: 50%;
             transform: translateX(-50%);
             z-index: 1000;
-            background: #ff6b6b;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 30px;
-            font-size: 16px;
+            text-align: center;
+            width: 90%;
+            max-width: 300px;
+        }
+
+        /* Кнопки радиуса */
+        .radius-selector {
+            display: flex;
+            justify-content: center;
+            gap: 6px;
+            margin-bottom: 10px;
+        }
+        .radius-btn {
+            background: rgba(255,255,255,0.85);
+            border: 2px solid transparent;
+            padding: 6px 10px;
+            border-radius: 12px;
+            font-size: 12px;
             font-weight: 600;
             cursor: pointer;
-            box-shadow: 0 4px 10px rgba(255, 107, 107, 0.4);
+            transition: all 0.2s;
+            color: #333;
+        }
+        .radius-btn.active {
+            background: #ff4757;
+            color: white;
+            border-color: #ff4757;
+            box-shadow: 0 2px 8px rgba(255, 71, 87, 0.4);
+        }
+
+        #generate-btn {
+            background: #2c3e50;
+            color: white;
+            border: none;
+            padding: 14px 20px;
+            border-radius: 50px;
+            font-size: 15px;
+            font-weight: bold;
+            box-shadow: 0 5px 15px rgba(44, 62, 80, 0.4);
+            cursor: pointer;
+            width: 100%;
             transition: transform 0.1s;
         }
-        #reset-btn:active { transform: translateX(-50%) scale(0.95); }
+        #generate-btn:active { transform: scale(0.97); }
     </style>
 </head>
 <body>
+    <div id="map"></div>
 
-    <div id="stats">
-        <h2 id="distance">0.00 км</h2>
-        <p>Пройдено</p>
+    <div id="info-panel">
+        <div class="status-text">До цели</div>
+        <div class="distance-text" id="distance-display">--</div>
     </div>
 
-    <div id="map"></div>
-    <button id="reset-btn" onclick="resetTrack()">Сбросить</button>
+    <div id="ui-container">
+        <div class="radius-selector">
+            <button class="radius-btn" onclick="setRadius(500, this)">500м</button>
+            <button class="radius-btn" onclick="setRadius(1000, this)">1км</button>
+            <button class="radius-btn active" onclick="setRadius(2000, this)">2км</button>
+            <button class="radius-btn" onclick="setRadius(5000, this)">5км</button>
+        </div>
+        <button id="generate-btn" onclick="generateTarget()">🎲 Найти точку</button>
+    </div>
 
-    <!-- Подключаем скрипт Leaflet -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
     <script>
-        // 1. Инициализация карты
+        let currentRadius = 2000;
         const map = L.map('map', { zoomControl: false }).setView([55.7558, 37.6173], 13);
 
-        // 2. Добавляем красивую цветную карту OpenStreetMap
-        // Используем стандартный слой, но с правильными настройками для избежания 403 ошибки при работе через сервер
+        // Цветастая карта OpenStreetMap
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; OpenStreetMap contributors',
+            attribution: '&copy; OpenStreetMap',
             maxZoom: 19
         }).addTo(map);
 
-        // 3. Переменные для трека
-        let path = []; 
-        let polyline = L.polyline([], {
-            color: '#3498db', // Яркий синий
-            weight: 6,        // Толщина линии
-            opacity: 0.8,     // Прозрачность
-            lineCap: 'round'  // Закругленные края
-        }).addTo(map);
+        let userMarker = null, targetMarker = null, radiusCircle = null;
+        let userLat = 0, userLng = 0, targetLat = 0, targetLng = 0;
 
-        // Добавляем тень для линии, чтобы она выделялась на любой карте
-        let polylineShadow = L.polyline([], {
-            color: '#ffffff',
-            weight: 10,
-            opacity: 0.5,
-            lineCap: 'round'
-        }).addTo(map);
+        // Иконки
+        const userIcon = L.divIcon({ 
+            className: 'user-pin', 
+            html: '<div style="background:#3498db;width:14px;height:14px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 8px rgba(0,0,0,0.3);"></div>', 
+            iconSize: [20,20], iconAnchor: [10,10] 
+        });
+        const targetIcon = L.divIcon({ 
+            className: 'target-pin', 
+            html: '<div style="background:#ff4757;width:18px;height:18px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 12px rgba(255,71,87,0.6);animation:pulse 1s infinite;"></div>', 
+            iconSize: [24,24], iconAnchor: [12,12] 
+        });
 
-        let totalDistance = 0;
-        let watchId = null;
+        // Анимация пульсации
+        const style = document.createElement('style');
+        style.innerHTML = `@keyframes pulse { 0%{transform:scale(1);} 50%{transform:scale(1.2);} 100%{transform:scale(1);} }`;
+        document.head.appendChild(style);
 
-        // Элементы UI
-        const distEl = document.getElementById('distance');
-
-        // 4. Функция расчета расстояния (Гаверсинусы)
-        function getDistanceFromLatLonInM(lat1, lon1, lat2, lon2) {
-            const R = 6371e3; 
-            const dLat = deg2rad(lat2 - lat1);
-            const dLon = deg2rad(lon2 - lon1);
-            const a = 
-                Math.sin(dLat/2) * Math.sin(dLat/2) +
-                Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * 
-                Math.sin(dLon/2) * Math.sin(dLon/2); 
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
-            return R * c; 
-        }
-
-        function deg2rad(deg) {
-            return deg * (Math.PI/180);
-        }
-
-        // 5. Запуск отслеживания
-        function startTracking() {
-            if (!navigator.geolocation) {
-                alert("Геолокация не поддерживается");
-                return;
-            }
-
-            const options = {
-                enableHighAccuracy: true,
-                timeout: 10000,
-                maximumAge: 0
-            };
-
-            watchId = navigator.geolocation.watchPosition(success, error, options);
-        }
-
-        function success(position) {
-            const lat = position.coords.latitude;
-            const lng = position.coords.longitude;
-
-            if (path.length === 0) {
-                map.setView([lat, lng], 16);
-            }
-
-            const newPoint = [lat, lng];
-            
-            if (path.length > 0) {
-                const lastPoint = path[path.length - 1];
-                const dist = getDistanceFromLatLonInM(lastPoint[0], lastPoint[1], lat, lng);
-                
-                // Фильтр шума: игнорируем движения меньше 3 метров
-                if (dist > 3) {
-                    totalDistance += dist;
-                    path.push(newPoint);
-                    
-                    // Обновляем обе линии (тень и основную)
-                    polyline.setLatLngs(path);
-                    polylineShadow.setLatLngs(path);
-                }
+        // Отслеживание позиции
+        navigator.geolocation.watchPosition(pos => {
+            userLat = pos.coords.latitude; userLng = pos.coords.longitude;
+            if (!userMarker) {
+                userMarker = L.marker([userLat, userLng], {icon: userIcon}).addTo(map);
+                map.setView([userLat, userLng], 15);
             } else {
-                path.push(newPoint);
-                polyline.setLatLngs(path);
-                polylineShadow.setLatLngs(path);
+                userMarker.setLatLng([userLat, userLng]);
             }
+            if (targetMarker) updateDistance();
+        }, err => console.error(err), { enableHighAccuracy: true });
 
-            distEl.innerText = (totalDistance / 1000).toFixed(2) + " км";
-        }
-
-        function error(err) {
-            console.warn(`ERROR(${err.code}): ${err.message}`);
-        }
-
-        function resetTrack() {
-            if(confirm("Очистить текущий маршрут?")) {
-                path = [];
-                totalDistance = 0;
-                polyline.setLatLngs([]);
-                polylineShadow.setLatLngs([]);
-                distEl.innerText = "0.00 км";
+        // Смена радиуса
+        function setRadius(val, btnElement) {
+            currentRadius = val;
+            document.querySelectorAll('.radius-btn').forEach(b => b.classList.remove('active'));
+            btnElement.classList.add('active');
+            
+            // Если круг уже нарисован, обновляем его размер
+            if (radiusCircle) {
+                radiusCircle.setRadius(currentRadius);
             }
         }
 
-        // Запускаем
-        startTracking();
+        // Генерация цели
+        function generateTarget() {
+            if (!userLat && !userLng) { alert("Подождите, определяем GPS..."); return; }
 
+            // Рисуем/обновляем круг радиуса
+            if (radiusCircle) map.removeLayer(radiusCircle);
+            radiusCircle = L.circle([userLat, userLng], { 
+                radius: currentRadius, 
+                color: '#ff4757', 
+                fillColor: '#ff4757', 
+                fillOpacity: 0.08, 
+                weight: 2 
+            }).addTo(map);
+
+            // Математика равномерного распределения в круге
+            const r = currentRadius * Math.sqrt(Math.random());
+            const theta = Math.random() * 2 * Math.PI;
+            const latOffset = (r * Math.cos(theta)) / 111111;
+            const lngOffset = (r * Math.sin(theta)) / (111111 * Math.cos(userLat * Math.PI / 180));
+
+            targetLat = userLat + latOffset;
+            targetLng = userLng + lngOffset;
+
+            if (targetMarker) map.removeLayer(targetMarker);
+            targetMarker = L.marker([targetLat, targetLng], {icon: targetIcon}).addTo(map);
+
+            document.getElementById('info-panel').style.display = 'block';
+            document.getElementById('generate-btn').innerText = "🔄 Другая точка";
+            updateDistance();
+
+            // Плавно приближаем карту, чтобы было видно и тебя, и цель
+            const bounds = L.latLngBounds([[userLat, userLng], [targetLat, targetLng]]);
+            map.fitBounds(bounds, {padding: [70, 70]});
+        }
+
+        // Расчет расстояния
+        function getDistanceFromLatLonInM(lat1, lon1, lat2, lon2) {
+            const R = 6371e3;
+            const dLat = (lat2-lat1) * Math.PI/180;
+            const dLon = (lon2-lon1) * Math.PI/180;
+            const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        }
+
+        function updateDistance() {
+            const dist = getDistanceFromLatLonInM(userLat, userLng, targetLat, targetLng);
+            document.getElementById('distance-display').innerText = dist < 1000 ? Math.round(dist) + " м" : (dist/1000).toFixed(2) + " км";
+        }
     </script>
 </body>
 </html>
